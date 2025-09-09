@@ -1,0 +1,65 @@
+// Jenkinsfile (Declarative pipeline)
+pipeline {
+  agent any
+  environment {
+    REGISTRY = "localhost:5000"
+    IMAGE = "${REGISTRY}/my-website"
+  }
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Build image') {
+      steps {
+        sh 'docker build -t ${IMAGE}:${BUILD_NUMBER} .'
+      }
+    }
+
+    stage('Push image') {
+      steps {
+        // For local insecure registry, no login required.
+        sh 'docker push ${IMAGE}:${BUILD_NUMBER}'
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        sh '''
+          # stop & remove old container (if exists)
+          docker rm -f my-website || true
+          # run new container, publish port 8081 -> container 80
+          docker run -d --name my-website -p 8081:80 --restart=always ${IMAGE}:${BUILD_NUMBER}
+        '''
+      }
+    }
+
+    stage('Health check') {
+      steps {
+        sh '''
+          # Use a short loop; this runs curl from a container that shares the website container's network namespace,
+          # so "localhost" means the website container's internal 80 port.
+          for i in $(seq 1 6); do
+            HTTP=$(docker run --rm --network container:my-website curlimages/curl:latest -s -o /dev/null -w "%{http_code}" http://localhost || true)
+            echo "HTTP => $HTTP"
+            if [ "$HTTP" = "200" ]; then
+              echo "Health check ok"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Health check FAILED"
+          exit 1
+        '''
+      }
+    }
+  }
+  post {
+    failure {
+      echo "Pipeline failed. Check console output and container logs: docker logs my-website"
+    }
+  }
+}
+
